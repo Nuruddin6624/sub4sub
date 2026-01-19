@@ -9,29 +9,52 @@ import Profile from './pages/Profile';
 import Admin from './pages/Admin';
 import { User } from './types';
 import { api, supabase } from './services/supabase';
-import { Shield, ArrowLeft, Chrome, Mail, Lock, LogIn, UserPlus } from 'lucide-react';
+import { Shield, Chrome, Mail, Lock, LogIn, UserPlus, Loader2 } from 'lucide-react';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [authProcessing, setAuthProcessing] = useState(false);
   
-  // Auth Mode: 'LOGIN' | 'SIGNUP'
+  // Auth Form States
   const [authMode, setAuthMode] = useState<'LOGIN' | 'SIGNUP'>('LOGIN');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 
-  // Setup/Registration State for new users
+  // Setup/Registration State
   const [needsSetup, setNeedsSetup] = useState(false);
   const [userUrl, setUserUrl] = useState('');
   const [userName, setUserName] = useState('');
 
   useEffect(() => {
+    // Handle Supabase Hash Conflict (OAuth redirect fixes)
+    const handleHashAuth = () => {
+        const hash = window.location.hash;
+        if (hash.includes('access_token=') || hash.includes('type=recovery')) {
+            // If it's not starting with #/ (router format), it's a Supabase raw hash
+            if (!hash.startsWith('#/')) {
+                // Supabase will handle this automatically, we just need to wait for onAuthStateChange
+                console.log("Detected Supabase Auth Hash");
+            }
+        }
+    };
+    handleHashAuth();
+
     initAuth();
+
     if (supabase) {
-        const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+        const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
             if (session?.user) {
-                checkUserProfile(session.user.id, session.user.email!);
+                // Clean URL hash if it contains auth tokens
+                if (window.location.hash.includes('access_token')) {
+                    window.history.replaceState(null, '', window.location.pathname);
+                }
+                await checkUserProfile(session.user.id, session.user.email!);
+            } else if (event === 'SIGNED_OUT') {
+                setUser(null);
+                setNeedsSetup(false);
+                setLoading(false);
             }
         });
         return () => subscription.unsubscribe();
@@ -39,81 +62,108 @@ const App: React.FC = () => {
   }, []);
 
   const initAuth = async () => {
-    setLoading(true);
-    const u = await api.getUser();
-    if (u) setUser(u);
-    setLoading(false);
+    try {
+        const session = await api.getSession();
+        if (session?.user) {
+            await checkUserProfile(session.user.id, session.user.email!);
+        } else {
+            const localUser = await api.getUser();
+            if (localUser) setUser(localUser);
+            setLoading(false);
+        }
+    } catch (err) {
+        setLoading(false);
+    }
   };
 
   const checkUserProfile = async (id: string, userEmail: string) => {
-      const profile = await api.getUser(id);
-      if (profile) {
-          setUser(profile);
-          setNeedsSetup(false);
-      } else {
+      try {
+          const profile = await api.getUser(id);
+          if (profile) {
+              setUser(profile);
+              setNeedsSetup(false);
+          } else {
+              setEmail(userEmail);
+              setNeedsSetup(true);
+          }
+      } catch (err) {
           setEmail(userEmail);
           setNeedsSetup(true);
+      } finally {
+          setLoading(false);
       }
   };
 
   const handleGoogleLogin = async () => {
       try {
           setError('');
+          setAuthProcessing(true);
           await api.signInWithGoogle();
       } catch (err: any) {
           setError(err.message);
+          setAuthProcessing(false);
       }
   };
 
   const handleEmailAuth = async (e: React.FormEvent) => {
       e.preventDefault();
       setError('');
+      setAuthProcessing(true);
       
-      // 1. Check for Admin Credentials first
+      // 1. Admin Access
       if (email === 'shamim6624@gmail.com' && password === 'nur6624') {
           const admin = await api.signInAdmin(email, password);
           if (admin) {
               setUser(admin);
+              setAuthProcessing(false);
               return;
           }
       }
 
-      // 2. Regular User Flow (Supabase)
+      // 2. Regular User Flow
       try {
           if (authMode === 'LOGIN') {
-              // Real implementation would use supabase.auth.signInWithPassword
-              // For this build, we check if user exists in our DB
-              const profile = await api.findUserByEmail(email);
-              if (profile) {
-                  setUser(profile);
-                  localStorage.setItem('currentUser', JSON.stringify(profile));
-              } else {
-                  setError('Account not found. Please Sign Up.');
-              }
+              const { user: authUser, error: authError } = await api.signInWithEmail(email, password);
+              if (authError) throw new Error(authError);
+              if (authUser) await checkUserProfile(authUser.id, authUser.email!);
           } else {
-              // SIGN UP flow
+              // SIGN UP mode: Check if profile exists first
               const exists = await api.findUserByEmail(email);
               if (exists) {
-                  setError('Email already registered. Please Login.');
+                  setError('Account already exists. Please login.');
+                  setAuthMode('LOGIN');
               } else {
+                  // User exists in setup mode
                   setNeedsSetup(true);
               }
           }
       } catch (err: any) {
-          setError(err.message);
+          setError(err.message || 'Authentication failed');
+      } finally {
+          setAuthProcessing(false);
       }
   };
 
   const handleCompleteSetup = async (e: React.FormEvent) => {
       e.preventDefault();
-      if (userUrl && userName) {
-          const newUser = await api.registerUser(email, userUrl, userName);
+      setAuthProcessing(true);
+      setError('');
+      try {
+          if (!userUrl || !userName) throw new Error("Please fill all fields");
+          
+          // registerUser now handles both Supabase Sign-Up and Profile Creation
+          const newUser = await api.registerUser(email, password, userUrl, userName);
           setUser(newUser);
           setNeedsSetup(false);
+      } catch (err: any) {
+          setError(err.message);
+      } finally {
+          setAuthProcessing(false);
       }
   };
 
   const handleLogout = async () => {
+      setLoading(true);
       if (supabase) await supabase.auth.signOut();
       localStorage.removeItem('currentUser');
       setUser(null);
@@ -121,13 +171,14 @@ const App: React.FC = () => {
       setEmail('');
       setPassword('');
       setAuthMode('LOGIN');
+      setLoading(false);
   };
 
   if (loading) {
     return (
-        <div className="h-screen w-screen flex flex-col items-center justify-center bg-white space-y-4">
-            <div className="w-12 h-12 border-4 border-brand-200 border-t-brand-600 rounded-full animate-spin"></div>
-            <p className="text-gray-400 font-medium animate-pulse">Initializing SubXchange...</p>
+        <div className="h-screen w-screen flex flex-col items-center justify-center bg-white">
+            <Loader2 className="w-10 h-10 text-brand-600 animate-spin mb-4" />
+            <p className="text-gray-400 font-medium animate-pulse">Syncing Session...</p>
         </div>
     );
   }
@@ -136,16 +187,9 @@ const App: React.FC = () => {
   if (!user && !needsSetup) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-        <div className="w-full max-w-md bg-white rounded-[2rem] shadow-2xl shadow-brand-100 overflow-hidden border border-white">
-           
-           {/* Header Section */}
-           <div className="bg-gradient-to-br from-brand-600 to-brand-800 p-10 text-white text-center relative">
-               <div className="absolute top-0 left-0 w-full h-full opacity-10 pointer-events-none">
-                   <svg width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="none">
-                       <path d="M0 0 L100 100 M100 0 L0 100" stroke="white" strokeWidth="0.5" />
-                   </svg>
-               </div>
-               <div className="relative z-10 flex flex-col items-center">
+        <div className="w-full max-w-md bg-white rounded-[2rem] shadow-2xl overflow-hidden border border-white">
+           <div className="bg-gradient-to-br from-brand-600 to-brand-800 p-10 text-white text-center">
+               <div className="flex flex-col items-center">
                    <div className="bg-white/20 p-4 rounded-3xl backdrop-blur-xl mb-4 shadow-xl">
                        <Shield size={40} className="text-white" />
                    </div>
@@ -156,21 +200,19 @@ const App: React.FC = () => {
 
            <div className="p-8">
                {error && (
-                   <div className="mb-6 p-4 bg-red-50 text-red-600 text-sm rounded-2xl border border-red-100 flex items-center gap-2 animate-in slide-in-from-top-2">
-                       <div className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" />
+                   <div className="mb-6 p-4 bg-red-50 text-red-600 text-sm rounded-2xl border border-red-100 flex items-center gap-2">
+                       <div className="w-1.5 h-1.5 bg-red-500 rounded-full" />
                        {error}
                    </div>
                )}
 
                <div className="space-y-6">
-                   {/* Google Action */}
                    <button 
                      onClick={handleGoogleLogin}
-                     className="w-full bg-white border border-gray-200 text-gray-700 font-bold py-4 rounded-2xl shadow-sm hover:shadow-md transition-all flex items-center justify-center space-x-3 active:scale-[0.98] group"
+                     disabled={authProcessing}
+                     className="w-full bg-white border border-gray-200 text-gray-700 font-bold py-4 rounded-2xl shadow-sm hover:shadow-md transition-all flex items-center justify-center space-x-3 active:scale-[0.98] disabled:opacity-50"
                    >
-                       <div className="bg-white p-1 rounded-full group-hover:rotate-12 transition-transform">
-                           <Chrome size={22} className="text-red-500" />
-                       </div>
+                       <Chrome size={22} className="text-red-500" />
                        <span>Continue with Google</span>
                    </button>
 
@@ -180,52 +222,43 @@ const App: React.FC = () => {
                        <div className="flex-grow border-t border-gray-100"></div>
                    </div>
 
-                   {/* Email Form */}
                    <form onSubmit={handleEmailAuth} className="space-y-4">
                        <div className="space-y-1.5">
-                           <label className="text-[10px] font-black text-gray-400 uppercase ml-1 tracking-wider">Account Email</label>
-                           <div className="relative group">
-                               <Mail className="absolute left-4 top-4 text-gray-300 group-focus-within:text-brand-500 transition-colors" size={18} />
-                               <input 
-                                 type="email" 
-                                 required
-                                 className="w-full pl-12 p-4 bg-gray-50 border-2 border-transparent rounded-2xl focus:bg-white focus:border-brand-500 transition-all outline-none text-gray-700 font-medium"
-                                 placeholder="Enter your email"
-                                 value={email}
-                                 onChange={e => setEmail(e.target.value)}
-                               />
-                           </div>
+                           <label className="text-[10px] font-black text-gray-400 uppercase ml-1 tracking-wider">Email Address</label>
+                           <input 
+                             type="email" required
+                             className="w-full p-4 bg-gray-50 border-2 border-transparent rounded-2xl focus:bg-white focus:border-brand-500 transition-all outline-none text-gray-700 font-medium"
+                             placeholder="email@example.com"
+                             value={email}
+                             onChange={e => setEmail(e.target.value)}
+                           />
                        </div>
 
                        <div className="space-y-1.5">
                            <label className="text-[10px] font-black text-gray-400 uppercase ml-1 tracking-wider">Password</label>
-                           <div className="relative group">
-                               <Lock className="absolute left-4 top-4 text-gray-300 group-focus-within:text-brand-500 transition-colors" size={18} />
-                               <input 
-                                 type="password" 
-                                 required
-                                 className="w-full pl-12 p-4 bg-gray-50 border-2 border-transparent rounded-2xl focus:bg-white focus:border-brand-500 transition-all outline-none text-gray-700 font-medium"
-                                 placeholder="••••••••"
-                                 value={password}
-                                 onChange={e => setPassword(e.target.value)}
-                               />
-                           </div>
+                           <input 
+                             type="password" required
+                             className="w-full p-4 bg-gray-50 border-2 border-transparent rounded-2xl focus:bg-white focus:border-brand-500 transition-all outline-none text-gray-700 font-medium"
+                             placeholder="••••••••"
+                             value={password}
+                             onChange={e => setPassword(e.target.value)}
+                           />
                        </div>
 
                        <button 
                          type="submit"
-                         className="w-full bg-brand-600 text-white font-bold py-4 rounded-2xl shadow-xl shadow-brand-200 hover:bg-brand-700 transition-all active:scale-[0.98] flex items-center justify-center gap-2"
+                         disabled={authProcessing}
+                         className="w-full bg-brand-600 text-white font-bold py-4 rounded-2xl shadow-xl hover:bg-brand-700 transition-all active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50"
                        >
-                           {authMode === 'LOGIN' ? <LogIn size={20} /> : <UserPlus size={20} />}
+                           {authProcessing ? <Loader2 className="animate-spin" size={20} /> : (authMode === 'LOGIN' ? <LogIn size={20} /> : <UserPlus size={20} />)}
                            <span>{authMode === 'LOGIN' ? 'Login' : 'Create Account'}</span>
                        </button>
                    </form>
 
-                   {/* Toggle Auth Mode */}
                    <div className="text-center">
                        <button 
-                         onClick={() => setAuthMode(authMode === 'LOGIN' ? 'SIGNUP' : 'LOGIN')}
-                         className="text-gray-500 text-sm font-semibold hover:text-brand-600 transition-colors"
+                         onClick={() => { setAuthMode(authMode === 'LOGIN' ? 'SIGNUP' : 'LOGIN'); setError(''); }}
+                         className="text-gray-500 text-sm font-semibold hover:text-brand-600"
                        >
                            {authMode === 'LOGIN' ? "Don't have an account? Sign Up" : "Already have an account? Login"}
                        </button>
@@ -237,45 +270,41 @@ const App: React.FC = () => {
     );
   }
 
-  // --- REGISTRATION SETUP ---
+  // --- REGISTRATION SETUP SCREEN ---
   if (needsSetup) {
     return (
         <div className="min-h-screen bg-brand-600 flex items-center justify-center p-4">
             <div className="w-full max-w-md bg-white rounded-[2.5rem] shadow-2xl p-10">
-                <div className="text-center mb-10">
-                    <div className="w-20 h-20 bg-brand-50 text-brand-600 rounded-3xl flex items-center justify-center mx-auto mb-6 shadow-inner transform -rotate-3">
-                        <Chrome size={40} />
-                    </div>
-                    <h2 className="text-3xl font-black text-gray-900 leading-tight">Link Your Channel</h2>
-                    <p className="text-gray-400 mt-2 font-medium">Verify your YouTube profile to start.</p>
+                <div className="text-center mb-8">
+                    <h2 className="text-3xl font-black text-gray-900 leading-tight">Channel Setup</h2>
+                    <p className="text-gray-400 mt-2 font-medium">Link your YouTube to complete registration.</p>
                 </div>
+
+                {error && <div className="mb-4 p-3 bg-red-50 text-red-600 text-xs rounded-xl border border-red-100">{error}</div>}
 
                 <form onSubmit={handleCompleteSetup} className="space-y-6">
                     <div className="space-y-2">
-                        <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Channel Display Name</label>
+                        <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">Channel Name</label>
                         <input 
-                            type="text" 
-                            required 
-                            placeholder="e.g. Rahim Vlogs"
+                            type="text" required placeholder="e.g. Rahim Tech"
                             className="w-full p-4 bg-gray-50 border-2 border-transparent rounded-2xl outline-none focus:bg-white focus:border-brand-500 transition-all font-medium text-gray-700"
                             value={userName}
                             onChange={e => setUserName(e.target.value)}
                         />
                     </div>
                     <div className="space-y-2">
-                        <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">YouTube Channel URL</label>
+                        <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">YouTube URL</label>
                         <input 
-                            type="url" 
-                            required 
-                            placeholder="https://youtube.com/@channel"
+                            type="url" required placeholder="https://youtube.com/@channel"
                             className="w-full p-4 bg-gray-50 border-2 border-transparent rounded-2xl outline-none focus:bg-white focus:border-brand-500 transition-all font-medium text-gray-700"
                             value={userUrl}
                             onChange={e => setUserUrl(e.target.value)}
                         />
                     </div>
-                    <button type="submit" className="w-full bg-brand-600 text-white font-bold py-5 rounded-2xl shadow-2xl shadow-brand-200 hover:bg-brand-700 transition-all transform hover:-translate-y-1">
-                        Finish Profile Setup
+                    <button type="submit" disabled={authProcessing} className="w-full bg-brand-600 text-white font-bold py-5 rounded-2xl shadow-xl hover:bg-brand-700 transition-all disabled:opacity-50 flex justify-center items-center">
+                        {authProcessing ? <Loader2 className="animate-spin" /> : 'Complete Registration'}
                     </button>
+                    <button type="button" onClick={handleLogout} className="w-full text-gray-400 text-sm font-bold mt-2">Cancel</button>
                 </form>
             </div>
         </div>
