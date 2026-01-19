@@ -2,15 +2,23 @@ import { createClient } from '@supabase/supabase-js';
 import { User, ChannelTask, ActionLog, PaymentLog, WithdrawalLog } from '../types';
 import { MOCK_CHANNELS, ACTION_BASE_COSTS, COST_PER_MINUTE } from '../constants';
 
-// NOTE: In a real production app, these would come from process.env
-const SUPABASE_URL = process.env.VITE_SUPABASE_URL || '';
-const SUPABASE_KEY = process.env.VITE_SUPABASE_ANON_KEY || '';
+// ==========================================
+// 🔴 গুরত্বপূর্ণ: আপনার SUPABASE KEY এখানে বসান
+// ==========================================
+
+// অপশন ১: সরাসরি নিচে কোটেশন '' এর ভেতর বসান (সহজ পদ্ধতি)
+// অপশন ২: .env ফাইল তৈরি করে সেখানে VITE_SUPABASE_URL এবং VITE_SUPABASE_ANON_KEY সেট করুন
+
+const SUPABASE_URL = ((import.meta as any).env && (import.meta as any).env.VITE_SUPABASE_URL) || 'https://kqypggcnbeoepcbwlzmi.supabase.co';
+const SUPABASE_KEY = ((import.meta as any).env && (import.meta as any).env.VITE_SUPABASE_ANON_KEY) || 'sb_publishable_XHlqJgMK_8xFvj5sikXfWQ_Lec1Wq9A';
+
+// ==========================================
 
 // We implement a "Service" pattern. 
 // If valid keys are present, we use Supabase.
 // If not, we use LocalStorage to mimic a backend for the user to try the app immediately.
 
-const isMock = !SUPABASE_URL || !SUPABASE_KEY;
+const isMock = !SUPABASE_URL || !SUPABASE_KEY || SUPABASE_URL.includes('আপনার_SUPABASE_URL');
 
 export const supabase = !isMock ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
