@@ -54,6 +54,16 @@ export const api = {
     return data;
   },
 
+  // NEW: Check if user exists by email (for unified login)
+  findUserByEmail: async (email: string): Promise<User | null> => {
+      if (isMock) {
+          const dbUsers = getStorage<User[]>('db_users', SEED_USERS);
+          return dbUsers.find(u => u.email === email) || null;
+      }
+      const { data } = await supabase!.from('users').select('*').eq('email', email).single();
+      return data;
+  },
+
   // Simulate Google Login or Admin Login
   loginAdmin: async (email: string, password: string): Promise<User | null> => {
       if (isMock) {
