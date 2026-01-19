@@ -12,12 +12,38 @@ const SUPABASE_KEY = ((import.meta as any).env && (import.meta as any).env.VITE_
 const isMock = !SUPABASE_URL || !SUPABASE_KEY || SUPABASE_URL.includes('আপনার_SUPABASE');
 export const supabase = !isMock ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
+// --- HELPERS ---
 const getStorage = <T>(key: string, defaultVal: T): T => {
   const stored = localStorage.getItem(key);
   return stored ? JSON.parse(stored) : defaultVal;
 };
 const setStorage = (key: string, val: any) => {
   localStorage.setItem(key, JSON.stringify(val));
+};
+
+// Mapping function: Database (snake_case) -> Frontend (camelCase)
+const mapUser = (dbUser: any): User | null => {
+    if (!dbUser) return null;
+    return {
+        id: dbUser.id,
+        email: dbUser.email,
+        channelUrl: dbUser.channel_url || dbUser.channelUrl, // Supports both just in case
+        channelName: dbUser.channel_name || dbUser.channelName,
+        coins: dbUser.coins,
+        joinedAt: dbUser.joined_at || dbUser.joinedAt
+    };
+};
+
+// Mapping function: Frontend -> Database
+const toDbUser = (user: User) => {
+    return {
+        id: user.id,
+        email: user.email,
+        channel_url: user.channelUrl,
+        channel_name: user.channelName,
+        coins: user.coins,
+        joined_at: user.joinedAt
+    };
 };
 
 export const api = {
@@ -39,7 +65,7 @@ export const api = {
     
     const { data, error } = await supabase!.from('users').select('*').eq('id', targetId).single();
     if (error || !data) return null;
-    return data;
+    return mapUser(data);
   },
 
   findUserByEmail: async (email: string): Promise<User | null> => {
@@ -48,7 +74,7 @@ export const api = {
           return dbUsers.find(u => u.email === email) || null;
       }
       const { data } = await supabase!.from('users').select('*').eq('email', email).single();
-      return data;
+      return mapUser(data);
   },
 
   signInWithGoogle: async () => {
@@ -87,24 +113,26 @@ export const api = {
   },
 
   registerUser: async (email: string, password: string, channelUrl: string, channelName: string): Promise<User> => {
-    let finalUserId = crypto.randomUUID() as any;
+    let finalUserId = '';
 
     if (!isMock) {
-        // 1. Check if user already has an Auth session (from Google)
+        // 1. Get current user (might be from Google or Email Session)
         const { data: { user: existingAuthUser } } = await supabase!.auth.getUser();
         
         if (!existingAuthUser) {
-            // 2. New Email Signup: Create Auth User
+            // 2. New Email Signup
             const { data: signUpData, error: signUpError } = await supabase!.auth.signUp({
                 email,
                 password,
             });
             if (signUpError) throw signUpError;
-            if (!signUpData.user) throw new Error("Signup failed. No user returned.");
+            if (!signUpData.user) throw new Error("Check your email for confirmation link.");
             finalUserId = signUpData.user.id;
         } else {
             finalUserId = existingAuthUser.id;
         }
+    } else {
+        finalUserId = crypto.randomUUID();
     }
 
     const newUser: User = {
@@ -122,18 +150,27 @@ export const api = {
       dbUsers.push(newUser);
       setStorage('db_users', dbUsers);
     } else {
-      const { error: dbError } = await supabase!.from('users').upsert(newUser);
-      if (dbError) throw dbError;
+      // Use mapping to snake_case for DB
+      const { error: dbError } = await supabase!.from('users').upsert(toDbUser(newUser));
+      if (dbError) {
+          console.error("DB Error during registration:", dbError);
+          // If it fails with 'channel_name' missing, try camelCase as fallback
+          if (dbError.message.includes('channel_name')) {
+             await supabase!.from('users').upsert(newUser);
+          } else {
+             throw dbError;
+          }
+      }
       setStorage('currentUser', newUser);
     }
     return newUser;
   },
 
-  // --- REMAINING API METHODS (Tasks, Withdrawals, etc.) ---
+  // --- REST OF API METHODS (Task mapping if needed, but tasks seem fine) ---
   getAllUsers: async (): Promise<User[]> => {
       if (isMock) return getStorage<User[]>('db_users', []);
       const { data } = await supabase!.from('users').select('*');
-      return data || [];
+      return (data || []).map(mapUser).filter(u => u !== null) as User[];
   },
 
   updateUserCoins: async (userId: string, newBalance: number): Promise<boolean> => {
