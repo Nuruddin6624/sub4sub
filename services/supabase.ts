@@ -69,7 +69,8 @@ export const api = {
       if (!user) return null;
       targetId = user.id;
     }
-    const { data } = await supabase!.from('users').select('*').eq('id', targetId).single();
+    const { data, error } = await supabase!.from('users').select('*').eq('id', targetId).single();
+    if (error) return null;
     return mapUser(data);
   },
 
@@ -115,32 +116,62 @@ export const api = {
 
   registerUser: async (email: string, password: string, channelUrl: string, channelName: string): Promise<User> => {
     let finalUserId = '';
+    
     if (!isMock) {
-        const { data: { user: existingAuthUser } } = await supabase!.auth.getUser();
-        if (!existingAuthUser) {
-            const { data: signUpData, error: signUpError } = await supabase!.auth.signUp({ email, password });
+        // First try to see if user is already authenticated (from Google)
+        const { data: { user: authUser } } = await supabase!.auth.getUser();
+        
+        if (!authUser) {
+            // New email signup
+            const { data: signUpData, error: signUpError } = await supabase!.auth.signUp({ 
+                email, 
+                password,
+                options: {
+                    data: { channel_name: channelName }
+                }
+            });
             if (signUpError) throw signUpError;
-            if (!signUpData.user) throw new Error("Check email for link.");
+            if (!signUpData.user) throw new Error("Signup failed. Please check your email.");
             finalUserId = signUpData.user.id;
         } else {
-            finalUserId = existingAuthUser.id;
+            finalUserId = authUser.id;
         }
     } else {
         finalUserId = crypto.randomUUID();
     }
 
-    const newUser: User = { id: finalUserId, email, channelUrl, channelName, coins: 10, joinedAt: new Date().toISOString() };
+    const newUser: User = { 
+        id: finalUserId, 
+        email, 
+        channelUrl, 
+        channelName, 
+        coins: 10, 
+        joinedAt: new Date().toISOString() 
+    };
+
     if (isMock) {
       setStorage('currentUser', newUser);
       const dbUsers = getStorage<User[]>('db_users', []);
       dbUsers.push(newUser);
       setStorage('db_users', dbUsers);
     } else {
+      // THE UPSERT MUST MATCH THE POLICIES
       const { error: dbError } = await supabase!.from('users').upsert({
-          id: newUser.id, email: newUser.email, channel_url: newUser.channelUrl, 
-          channel_name: newUser.channelName, coins: newUser.coins, joined_at: newUser.joinedAt
-      });
-      if (dbError) throw dbError;
+          id: newUser.id,
+          email: newUser.email,
+          channel_url: newUser.channelUrl, 
+          channel_name: newUser.channelName,
+          coins: newUser.coins,
+          joined_at: newUser.joinedAt
+      }, { onConflict: 'id' });
+
+      if (dbError) {
+          console.error("Supabase Error:", dbError);
+          if (dbError.message.includes('row-level security')) {
+              throw new Error("Database Security Error: Please ensure you have run the RLS SQL commands in your Supabase SQL Editor.");
+          }
+          throw dbError;
+      }
       setStorage('currentUser', newUser);
     }
     return newUser;
@@ -170,7 +201,7 @@ export const api = {
       const doneIds = new Set(logs.filter(l => l.userId === excludeUserId).map(l => l.targetChannelId));
       return [...userCampaigns.filter(t => t.ownerId !== excludeUserId), ...MOCK_CHANNELS as ChannelTask[]].filter(t => !doneIds.has(t.id));
     }
-    const { data } = await supabase!.from('channel_queue').select('*').neq('ownerId', excludeUserId).limit(10);
+    const { data } = await supabase!.from('channel_queue').select('*').neq('owner_id', excludeUserId).limit(10);
     return data || [];
   },
 
