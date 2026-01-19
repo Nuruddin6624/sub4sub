@@ -43,7 +43,8 @@ export interface PaymentPlan {
 export interface PaymentLog {
   id: string;
   userId: string;
-  amount: number;
+  amount: number; // The BDT Price paid
+  coinsRequested: number; // The coins to be granted
   method: 'bKash' | 'Nagad';
   transactionId: string;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
