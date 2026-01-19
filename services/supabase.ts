@@ -3,146 +3,128 @@ import { User, ChannelTask, ActionLog, PaymentLog, WithdrawalLog } from '../type
 import { MOCK_CHANNELS, ACTION_BASE_COSTS, COST_PER_MINUTE } from '../constants';
 
 // ==========================================
-// 🔴 গুরত্বপূর্ণ: আপনার SUPABASE KEY এখানে বসান
+// 🔴 SUPABASE URL & KEY (এগুলো আপনার Supabase Dashboard থেকে পাবেন)
 // ==========================================
-
-// অপশন ১: সরাসরি নিচে কোটেশন '' এর ভেতর বসান (সহজ পদ্ধতি)
-// অপশন ২: .env ফাইল তৈরি করে সেখানে VITE_SUPABASE_URL এবং VITE_SUPABASE_ANON_KEY সেট করুন
-
 const SUPABASE_URL = ((import.meta as any).env && (import.meta as any).env.VITE_SUPABASE_URL) || 'https://kqypggcnbeoepcbwlzmi.supabase.co';
 const SUPABASE_KEY = ((import.meta as any).env && (import.meta as any).env.VITE_SUPABASE_ANON_KEY) || 'sb_publishable_XHlqJgMK_8xFvj5sikXfWQ_Lec1Wq9A';
-
 // ==========================================
 
-// We implement a "Service" pattern. 
-// If valid keys are present, we use Supabase.
-// If not, we use LocalStorage to mimic a backend for the user to try the app immediately.
-
 const isMock = !SUPABASE_URL || !SUPABASE_KEY || SUPABASE_URL.includes('আপনার_SUPABASE_URL');
-
 export const supabase = !isMock ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
-// --- MOCK DATABASE (LocalStorage) ---
-
+// --- MOCK STORAGE HELPERS (Fallback) ---
 const getStorage = <T>(key: string, defaultVal: T): T => {
   const stored = localStorage.getItem(key);
   return stored ? JSON.parse(stored) : defaultVal;
 };
-
 const setStorage = (key: string, val: any) => {
   localStorage.setItem(key, JSON.stringify(val));
 };
 
-// Seed some fake users for the Admin to manage if the list is empty
-const SEED_USERS: User[] = [
-    { id: 'u1', email: 'rahim@test.com', channelUrl: 'https://youtube.com/@rahim', channelName: 'Rahim Vlogs', coins: 150, joinedAt: new Date().toISOString() },
-    { id: 'u2', email: 'karim@test.com', channelUrl: 'https://youtube.com/@karim', channelName: 'Karim Gaming', coins: 45, joinedAt: new Date().toISOString() },
-    { id: 'u3', email: 'sara@test.com', channelUrl: 'https://youtube.com/@sara', channelName: 'Sara Cooks', coins: 320, joinedAt: new Date().toISOString() },
-];
-
 // --- API METHODS ---
-
 export const api = {
-  getUser: async (): Promise<User | null> => {
-    if (isMock) {
-      return getStorage<User | null>('currentUser', null);
-    }
-    const { data: { user } } = await supabase!.auth.getUser();
-    if (!user) return null;
+  // Get Current Session
+  getSession: async () => {
+    if (isMock) return null;
+    const { data } = await supabase!.auth.getSession();
+    return data.session;
+  },
+
+  // Get User Profile from DB
+  getUser: async (userId?: string): Promise<User | null> => {
+    if (isMock) return getStorage<User | null>('currentUser', null);
     
-    const { data } = await supabase!.from('users').select('*').eq('id', user.id).single();
+    let targetId = userId;
+    if (!targetId) {
+      const { data: { user } } = await supabase!.auth.getUser();
+      if (!user) return null;
+      targetId = user.id;
+    }
+    
+    const { data } = await supabase!.from('users').select('*').eq('id', targetId).single();
     return data;
   },
 
-  // NEW: Check if user exists by email (for unified login)
+  // Find User by Email (for unified login)
   findUserByEmail: async (email: string): Promise<User | null> => {
       if (isMock) {
-          const dbUsers = getStorage<User[]>('db_users', SEED_USERS);
+          const dbUsers = getStorage<User[]>('db_users', []);
           return dbUsers.find(u => u.email === email) || null;
       }
       const { data } = await supabase!.from('users').select('*').eq('email', email).single();
       return data;
   },
 
-  // Simulate Google Login or Admin Login
-  loginAdmin: async (email: string, password: string): Promise<User | null> => {
-      if (isMock) {
-          // Hardcoded Admin Credentials as requested
-          if (email === 'shamim6624@gmail.com' && password === 'nur6624') {
-              const adminUser: User = {
-                  id: 'admin-master-id',
-                  email: email,
-                  channelUrl: 'https://youtube.com/admin',
-                  channelName: 'Super Admin',
-                  coins: 999999, // Admin gets unlimited coins for testing
-                  joinedAt: new Date().toISOString()
-              };
-              setStorage('currentUser', adminUser);
-              return adminUser;
-          }
-          return null;
+  // Google Login Trigger
+  signInWithGoogle: async () => {
+    if (isMock) {
+        alert("Mock Mode: Please configure Supabase Keys in services/supabase.ts to use Google Login.");
+        return;
+    }
+    const { error } = await supabase!.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: window.location.origin
       }
-      // Real implementation would verify against a secure auth provider
-      return null;
+    });
+    if (error) throw error;
+  },
+
+  // Admin Login Flow (Static Check)
+  signInAdmin: async (email: string, password: string): Promise<User | null> => {
+    if (email === 'shamim6624@gmail.com' && password === 'nur6624') {
+        const adminUser: User = {
+            id: 'admin-master-id',
+            email: email,
+            channelUrl: 'https://youtube.com/admin',
+            channelName: 'Super Admin',
+            coins: 999999,
+            joinedAt: new Date().toISOString()
+        };
+        // Always set in current session
+        setStorage('currentUser', adminUser);
+        return adminUser;
+    }
+    return null;
   },
 
   registerUser: async (email: string, channelUrl: string, channelName: string): Promise<User> => {
-    // If attempting to register as admin via normal flow, block or handle gracefully
-    if (email === 'shamim6624@gmail.com') {
-         throw new Error("Please use Admin Login for this email.");
-    }
-
     const newUser: User = {
-      id: crypto.randomUUID(),
+      id: !isMock ? (await supabase!.auth.getUser()).data.user?.id || crypto.randomUUID() : crypto.randomUUID(),
       email,
       channelUrl,
       channelName,
-      coins: 10, // Bonus for joining
+      coins: 10,
       joinedAt: new Date().toISOString()
     };
 
     if (isMock) {
       setStorage('currentUser', newUser);
-      
-      // Also save to the "Database" of users so Admin can see them
-      const dbUsers = getStorage<User[]>('db_users', SEED_USERS);
-      // Check if exists
-      const exists = dbUsers.find(u => u.email === email);
-      if (!exists) {
-          dbUsers.push(newUser);
-          setStorage('db_users', dbUsers);
-      }
-      
-      return newUser;
+      const dbUsers = getStorage<User[]>('db_users', []);
+      dbUsers.push(newUser);
+      setStorage('db_users', dbUsers);
+    } else {
+      const { error } = await supabase!.from('users').upsert(newUser);
+      if (error) throw error;
+      setStorage('currentUser', newUser);
     }
     return newUser;
   },
 
-  // --- ADMIN: USER MANAGEMENT ---
-
+  // --- ADMIN TOOLS ---
   getAllUsers: async (): Promise<User[]> => {
-      if (isMock) {
-          // Return the mock database of users
-          return getStorage<User[]>('db_users', SEED_USERS);
-      }
+      if (isMock) return getStorage<User[]>('db_users', []);
       const { data } = await supabase!.from('users').select('*');
       return data || [];
   },
 
   updateUserCoins: async (userId: string, newBalance: number): Promise<boolean> => {
       if (isMock) {
-          const dbUsers = getStorage<User[]>('db_users', SEED_USERS);
+          const dbUsers = getStorage<User[]>('db_users', []);
           const index = dbUsers.findIndex(u => u.id === userId);
           if (index !== -1) {
               dbUsers[index].coins = newBalance;
               setStorage('db_users', dbUsers);
-              
-              // If we are editing the currently logged in user (in a different session simulation), update them too
-              const currentUser = getStorage<User | null>('currentUser', null);
-              if (currentUser && currentUser.id === userId) {
-                  currentUser.coins = newBalance;
-                  setStorage('currentUser', currentUser);
-              }
               return true;
           }
           return false;
@@ -151,41 +133,18 @@ export const api = {
       return !error;
   },
 
-  // --- TASKS & ACTIONS ---
-
+  // --- TASK MANAGEMENT ---
   getTasks: async (excludeUserId: string): Promise<ChannelTask[]> => {
     if (isMock) {
-      // Return user created campaigns + mock channels
       const userCampaigns = getStorage<ChannelTask[]>('active_campaigns', []);
-      const availableUserCampaigns = userCampaigns.filter(t => 
-        (t.targetQuantity || 0) > (t.completedQuantity || 0)
-      );
-      // Filter out tasks the user has already done or pending
       const logs = getStorage<ActionLog[]>('actionLogs', []);
-      const myLogs = logs.filter(l => l.userId === excludeUserId);
-      const doneIds = new Set(myLogs.map(l => l.targetChannelId));
-
-      const filtered = [...availableUserCampaigns, ...MOCK_CHANNELS as ChannelTask[]].filter(t => !doneIds.has(t.id));
-
-      return filtered;
+      const doneIds = new Set(logs.filter(l => l.userId === excludeUserId).map(l => l.targetChannelId));
+      return [...userCampaigns.filter(t => t.ownerId !== excludeUserId), ...MOCK_CHANNELS as ChannelTask[]].filter(t => !doneIds.has(t.id));
     }
-    const { data } = await supabase!
-      .from('channel_queue')
-      .select('*')
-      .neq('ownerId', excludeUserId)
-      .limit(10);
+    const { data } = await supabase!.from('channel_queue').select('*').neq('ownerId', excludeUserId).limit(10);
     return data || [];
   },
-  
-  getMyCampaigns: async (userId: string): Promise<ChannelTask[]> => {
-      if(isMock) {
-          const allCampaigns = getStorage<ChannelTask[]>('active_campaigns', []);
-          return allCampaigns.filter(c => c.ownerId === userId).reverse(); // Newest first
-      }
-      return [];
-  },
 
-  // UPDATED: Now requires manual verification
   submitProof: async (user: User, task: ChannelTask, screenshotData: string): Promise<boolean> => {
       const log: ActionLog = {
           id: crypto.randomUUID(),
@@ -195,260 +154,165 @@ export const api = {
           type: task.requiredAction as any,
           timestamp: new Date().toISOString(),
           status: 'PENDING',
-          screenshotUrl: screenshotData // Base64 string in mock
+          screenshotUrl: screenshotData
       };
-
-      if(isMock) {
+      if (isMock) {
           const logs = getStorage<ActionLog[]>('actionLogs', []);
           logs.push(log);
           setStorage('actionLogs', logs);
           return true;
       }
-      return false;
+      const { error } = await supabase!.from('action_logs').insert(log);
+      return !error;
   },
 
-  // --- ADMIN: PROOF VERIFICATION ---
-
-  getPendingActions: async (): Promise<ActionLog[]> => {
-      if(isMock) {
+  // --- REVIEW METHODS ---
+  getPendingActions: async () => isMock ? getStorage<ActionLog[]>('actionLogs', []).filter(l => l.status === 'PENDING') : [],
+  getWithdrawals: async () => isMock ? getStorage<WithdrawalLog[]>('withdrawalLogs', []) : [],
+  getPendingPayments: async () => isMock ? getStorage<PaymentLog[]>('paymentLogs', []).filter(p => p.status === 'PENDING') : [],
+  
+  reviewAction: async (id: string, status: any, reward: number): Promise<boolean> => {
+      if (isMock) {
           const logs = getStorage<ActionLog[]>('actionLogs', []);
-          return logs.filter(l => l.status === 'PENDING').reverse();
-      }
-      return [];
-  },
-
-  reviewAction: async (actionId: string, status: 'VERIFIED' | 'REJECTED', coinReward: number): Promise<void> => {
-      if(isMock) {
-          const logs = getStorage<ActionLog[]>('actionLogs', []);
-          const index = logs.findIndex(l => l.id === actionId);
-          
-          if(index !== -1) {
+          const index = logs.findIndex(l => l.id === id);
+          if (index !== -1) {
               logs[index].status = status;
               setStorage('actionLogs', logs);
-
-              // If Verified, Give Coins to User
               if (status === 'VERIFIED') {
-                  const userId = logs[index].userId;
-                  const dbUsers = getStorage<User[]>('db_users', SEED_USERS);
-                  const uIndex = dbUsers.findIndex(u => u.id === userId);
-                  
-                  if(uIndex !== -1) {
-                      dbUsers[uIndex].coins += coinReward;
+                  const dbUsers = getStorage<User[]>('db_users', []);
+                  const userIdx = dbUsers.findIndex(u => u.id === logs[index].userId);
+                  if (userIdx !== -1) {
+                      dbUsers[userIdx].coins += reward;
                       setStorage('db_users', dbUsers);
-
-                      // Update current user session if it matches
-                      const currentUser = getStorage<User | null>('currentUser', null);
-                      if (currentUser && currentUser.id === userId) {
-                          currentUser.coins = dbUsers[uIndex].coins;
-                          setStorage('currentUser', currentUser);
-                      }
-                  }
-
-                   // Update campaign completed count
-                   const targetId = logs[index].targetChannelId;
-                   const allCampaigns = getStorage<ChannelTask[]>('active_campaigns', []);
-                   const cIndex = allCampaigns.findIndex(c => c.id === targetId);
-                   if (cIndex !== -1) {
-                       allCampaigns[cIndex].completedQuantity = (allCampaigns[cIndex].completedQuantity || 0) + 1;
-                       setStorage('active_campaigns', allCampaigns);
-                   }
-              }
-          }
-      }
-  },
-
-  // --- PAYMENTS (DEPOSIT) ---
-
-  submitPayment: async (userId: string, amount: number, method: 'bKash' | 'Nagad', trxId: string): Promise<boolean> => {
-    const log: PaymentLog = {
-      id: crypto.randomUUID(),
-      userId,
-      amount,
-      method,
-      transactionId: trxId,
-      status: 'PENDING', // PENDING by default
-      timestamp: new Date().toISOString()
-    };
-
-    if (isMock) {
-        const payments = getStorage<PaymentLog[]>('paymentLogs', []);
-        payments.push(log);
-        setStorage('paymentLogs', payments);
-        return true;
-    }
-    return false;
-  },
-
-  // Admin: Get all Pending Deposits
-  getPendingPayments: async (): Promise<PaymentLog[]> => {
-    if(isMock) {
-        return getStorage<PaymentLog[]>('paymentLogs', []).filter(p => p.status === 'PENDING').reverse();
-    }
-    return [];
-  },
-
-  // Admin: Approve Deposit
-  reviewPayment: async (paymentId: string, status: 'APPROVED' | 'REJECTED', coinsToAdd: number): Promise<void> => {
-      if(isMock) {
-          const payments = getStorage<PaymentLog[]>('paymentLogs', []);
-          const index = payments.findIndex(p => p.id === paymentId);
-          
-          if (index !== -1) {
-              payments[index].status = status;
-              setStorage('paymentLogs', payments);
-
-              if (status === 'APPROVED') {
-                  const userId = payments[index].userId;
-                  const dbUsers = getStorage<User[]>('db_users', SEED_USERS);
-                  const uIndex = dbUsers.findIndex(u => u.id === userId);
-                  
-                  if (uIndex !== -1) {
-                      dbUsers[uIndex].coins += coinsToAdd;
-                      setStorage('db_users', dbUsers);
-                      
-                       // Also update currentUser if it matches
-                      const currentUser = getStorage<User>('currentUser', {} as User);
-                      if (currentUser.id === userId) {
-                          currentUser.coins = dbUsers[uIndex].coins;
-                          setStorage('currentUser', currentUser);
-                      }
                   }
               }
+              return true;
           }
+          return false;
       }
+      const { error } = await supabase!.from('action_logs').update({ status }).eq('id', id);
+      return !error;
   },
 
-  // --- WITHDRAWAL METHODS ---
-
-  requestWithdrawal: async (user: User, coins: number, method: 'bKash' | 'Nagad', accountNumber: string): Promise<boolean> => {
-      const conversionRate = 0.1; 
-      const amount = coins * conversionRate;
-
-      const log: WithdrawalLog = {
+  submitPayment: async (uid: string, amt: number, meth: any, trx: string): Promise<boolean> => {
+      const log: PaymentLog = {
           id: crypto.randomUUID(),
-          userId: user.id,
-          coins,
-          amount,
-          method,
-          accountNumber,
+          userId: uid,
+          amount: amt,
+          method: meth,
+          transactionId: trx,
           status: 'PENDING',
           timestamp: new Date().toISOString()
       };
-
       if (isMock) {
-          if (user.coins < coins) return false;
-          
-          const updatedUser = { ...user, coins: user.coins - coins };
-          setStorage('currentUser', updatedUser);
-
-          // Update DB version of user
-          const dbUsers = getStorage<User[]>('db_users', SEED_USERS);
-          const uIndex = dbUsers.findIndex(u => u.id === user.id);
-          if(uIndex !== -1) {
-              dbUsers[uIndex].coins = updatedUser.coins;
-              setStorage('db_users', dbUsers);
-          }
-
-          const withdrawals = getStorage<WithdrawalLog[]>('withdrawalLogs', []);
-          withdrawals.push(log);
-          setStorage('withdrawalLogs', withdrawals);
+          const logs = getStorage<PaymentLog[]>('paymentLogs', []);
+          logs.push(log);
+          setStorage('paymentLogs', logs);
           return true;
       }
-      return false;
+      const { error } = await supabase!.from('payment_logs').insert(log);
+      return !error;
   },
 
-  getWithdrawals: async (): Promise<WithdrawalLog[]> => {
-      if(isMock) {
-          return getStorage<WithdrawalLog[]>('withdrawalLogs', []).reverse();
-      }
-      return [];
-  },
-
-  processWithdrawal: async (id: string, status: 'APPROVED' | 'REJECTED'): Promise<void> => {
+  requestWithdrawal: async (u: User, c: number, m: any, a: string): Promise<boolean> => {
+      const log: WithdrawalLog = {
+          id: crypto.randomUUID(),
+          userId: u.id,
+          coins: c,
+          amount: c / 10,
+          method: m,
+          accountNumber: a,
+          status: 'PENDING',
+          timestamp: new Date().toISOString()
+      };
       if (isMock) {
-          const withdrawals = getStorage<WithdrawalLog[]>('withdrawalLogs', []);
-          const index = withdrawals.findIndex(w => w.id === id);
+          const logs = getStorage<WithdrawalLog[]>('withdrawalLogs', []);
+          logs.push(log);
+          setStorage('withdrawalLogs', logs);
+          return true;
+      }
+      const { error } = await supabase!.from('withdrawal_logs').insert(log);
+      return !error;
+  },
+
+  createCampaign: async (u: User, desc: string, type: any, dur: number, url: string, vid: string, q: number): Promise<boolean> => {
+      const task: ChannelTask = {
+          id: crypto.randomUUID(),
+          ownerId: u.id,
+          channelUrl: url,
+          videoId: vid,
+          channelName: u.channelName,
+          description: desc,
+          requiredAction: type,
+          duration: dur,
+          coinReward: ACTION_BASE_COSTS[type as keyof typeof ACTION_BASE_COSTS] || 4,
+          targetQuantity: q,
+          completedQuantity: 0,
+          createdAt: new Date().toISOString()
+      };
+      if (isMock) {
+          const campaigns = getStorage<ChannelTask[]>('active_campaigns', []);
+          campaigns.push(task);
+          setStorage('active_campaigns', campaigns);
+          const dbUsers = getStorage<User[]>('db_users', []);
+          const index = dbUsers.findIndex(usr => usr.id === u.id);
           if (index !== -1) {
-              const withdrawal = withdrawals[index];
-              withdrawal.status = status;
-              withdrawals[index] = withdrawal;
-              setStorage('withdrawalLogs', withdrawals);
-
-              if (status === 'REJECTED') {
-                  const dbUsers = getStorage<User[]>('db_users', SEED_USERS);
-                  const uIndex = dbUsers.findIndex(u => u.id === withdrawal.userId);
-                  if (uIndex !== -1) {
-                      dbUsers[uIndex].coins += withdrawal.coins;
-                      setStorage('db_users', dbUsers);
-                      
-                      // Also update currentUser if it matches
-                      const currentUser = getStorage<User>('currentUser', {} as User);
-                      if (currentUser.id === withdrawal.userId) {
-                          currentUser.coins = dbUsers[uIndex].coins;
-                          setStorage('currentUser', currentUser);
-                      }
-                  }
-              }
-          }
-      }
-  },
-  
-  getActionHistory: async (userId: string): Promise<ActionLog[]> => {
-      if(isMock) {
-          return getStorage<ActionLog[]>('actionLogs', []).filter(l => l.userId === userId);
-      }
-      return [];
-  },
-  
-  createCampaign: async(
-    user: User, 
-    description: string, 
-    actionType: 'SUBSCRIBE' | 'VIEW' | 'COMMENT', 
-    duration: number,
-    videoUrl: string,
-    videoId: string,
-    quantity: number
-  ): Promise<boolean> => {
-      const baseCost = ACTION_BASE_COSTS[actionType];
-      const timeBonus = duration > 60 ? Math.ceil((duration - 60) / 60) * COST_PER_MINUTE : 0;
-      const totalCostPerUser = baseCost + timeBonus;
-      const totalCampaignCost = totalCostPerUser * quantity;
-
-      if(isMock) {
-          if(user.coins < totalCampaignCost) return false;
-          
-          const updatedUser = { ...user, coins: user.coins - totalCampaignCost };
-          setStorage('currentUser', updatedUser);
-
-           // Update DB version of user
-          const dbUsers = getStorage<User[]>('db_users', SEED_USERS);
-          const uIndex = dbUsers.findIndex(u => u.id === user.id);
-          if(uIndex !== -1) {
-              dbUsers[uIndex].coins = updatedUser.coins;
+              const timeBonus = dur > 60 ? Math.ceil((dur - 60) / 60) * COST_PER_MINUTE : 0;
+              const costPerUser = task.coinReward + timeBonus;
+              dbUsers[index].coins -= (costPerUser * q);
               setStorage('db_users', dbUsers);
           }
-          
-          const newTask: ChannelTask = {
-              id: crypto.randomUUID(),
-              ownerId: user.id,
-              channelUrl: user.channelUrl, 
-              videoId: videoId,
-              channelName: user.channelName,
-              description: description || `Please ${actionType.toLowerCase()}`,
-              requiredAction: actionType,
-              duration: duration,
-              coinReward: totalCostPerUser,
-              targetQuantity: quantity,
-              completedQuantity: 0,
-              createdAt: new Date().toISOString()
-          };
-
-          const existingCampaigns = getStorage<ChannelTask[]>('active_campaigns', []);
-          existingCampaigns.unshift(newTask);
-          setStorage('active_campaigns', existingCampaigns);
-
           return true;
       }
-      return false;
+      const { error } = await supabase!.from('channel_queue').insert(task);
+      return !error;
+  },
+
+  getMyCampaigns: async (uid: string) => isMock ? getStorage<ChannelTask[]>('active_campaigns', []).filter(c => c.ownerId === uid) : [],
+
+  processWithdrawal: async (id: string, status: any): Promise<boolean> => {
+    if (isMock) {
+        const logs = getStorage<WithdrawalLog[]>('withdrawalLogs', []);
+        const index = logs.findIndex(l => l.id === id);
+        if (index !== -1) {
+            logs[index].status = status;
+            setStorage('withdrawalLogs', logs);
+            if (status === 'REJECTED') {
+                const dbUsers = getStorage<User[]>('db_users', []);
+                const userIdx = dbUsers.findIndex(u => u.id === logs[index].userId);
+                if (userIdx !== -1) {
+                    dbUsers[userIdx].coins += logs[index].coins;
+                    setStorage('db_users', dbUsers);
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+    const { error } = await supabase!.from('withdrawal_logs').update({ status }).eq('id', id);
+    return !error;
+  },
+
+  reviewPayment: async (id: string, status: any, coins: number): Promise<boolean> => {
+    if (isMock) {
+        const logs = getStorage<PaymentLog[]>('paymentLogs', []);
+        const index = logs.findIndex(l => l.id === id);
+        if (index !== -1) {
+            logs[index].status = status;
+            setStorage('paymentLogs', logs);
+            if (status === 'APPROVED') {
+                const dbUsers = getStorage<User[]>('db_users', []);
+                const userIdx = dbUsers.findIndex(u => u.id === logs[index].userId);
+                if (userIdx !== -1) {
+                    dbUsers[userIdx].coins += coins;
+                    setStorage('db_users', dbUsers);
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+    const { error } = await supabase!.from('payment_logs').update({ status }).eq('id', id);
+    return !error;
   }
 };
