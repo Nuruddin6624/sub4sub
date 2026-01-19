@@ -1,3 +1,4 @@
+
 import { createClient } from '@supabase/supabase-js';
 import { User, ChannelTask, ActionLog, PaymentLog, WithdrawalLog } from '../types';
 import { MOCK_CHANNELS, ACTION_BASE_COSTS, COST_PER_MINUTE } from '../constants';
@@ -23,10 +24,11 @@ const setStorage = (key: string, val: any) => {
 
 // --- API METHODS ---
 export const api = {
-  // Get Current Session
+  // Get Current Session (Important for OAuth detection)
   getSession: async () => {
     if (isMock) return null;
-    const { data } = await supabase!.auth.getSession();
+    const { data, error } = await supabase!.auth.getSession();
+    if (error) return null;
     return data.session;
   },
 
@@ -41,11 +43,13 @@ export const api = {
       targetId = user.id;
     }
     
-    const { data } = await supabase!.from('users').select('*').eq('id', targetId).single();
+    // Check if profile exists in public.users table
+    const { data, error } = await supabase!.from('users').select('*').eq('id', targetId).single();
+    if (error || !data) return null;
     return data;
   },
 
-  // Find User by Email (for unified login)
+  // Find User by Email
   findUserByEmail: async (email: string): Promise<User | null> => {
       if (isMock) {
           const dbUsers = getStorage<User[]>('db_users', []);
@@ -58,19 +62,19 @@ export const api = {
   // Google Login Trigger
   signInWithGoogle: async () => {
     if (isMock) {
-        alert("Mock Mode: Please configure Supabase Keys in services/supabase.ts to use Google Login.");
+        alert("Mock Mode: Configure Supabase keys in services/supabase.ts");
         return;
     }
     const { error } = await supabase!.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: window.location.origin
+        redirectTo: window.location.origin // Ensure this matches your Supabase Auth settings
       }
     });
     if (error) throw error;
   },
 
-  // Admin Login Flow (Static Check)
+  // Admin Login Flow
   signInAdmin: async (email: string, password: string): Promise<User | null> => {
     if (email === 'shamim6624@gmail.com' && password === 'nur6624') {
         const adminUser: User = {
@@ -81,7 +85,6 @@ export const api = {
             coins: 999999,
             joinedAt: new Date().toISOString()
         };
-        // Always set in current session
         setStorage('currentUser', adminUser);
         return adminUser;
     }
@@ -89,8 +92,16 @@ export const api = {
   },
 
   registerUser: async (email: string, channelUrl: string, channelName: string): Promise<User> => {
+    // Cast to any to handle potential UUID template literal type mismatches in different environments
+    let id = crypto.randomUUID() as any;
+    
+    if (!isMock) {
+        const { data: { user } } = await supabase!.auth.getUser();
+        if (user) id = user.id;
+    }
+
     const newUser: User = {
-      id: !isMock ? (await supabase!.auth.getUser()).data.user?.id || crypto.randomUUID() : crypto.randomUUID(),
+      id,
       email,
       channelUrl,
       channelName,
@@ -147,7 +158,8 @@ export const api = {
 
   submitProof: async (user: User, task: ChannelTask, screenshotData: string): Promise<boolean> => {
       const log: ActionLog = {
-          id: crypto.randomUUID(),
+          // Cast to any to satisfy specific UUID template literal types often used by Supabase database schema definitions
+          id: crypto.randomUUID() as any,
           userId: user.id,
           userName: user.channelName,
           targetChannelId: task.id,
@@ -166,7 +178,6 @@ export const api = {
       return !error;
   },
 
-  // --- REVIEW METHODS ---
   getPendingActions: async () => isMock ? getStorage<ActionLog[]>('actionLogs', []).filter(l => l.status === 'PENDING') : [],
   getWithdrawals: async () => isMock ? getStorage<WithdrawalLog[]>('withdrawalLogs', []) : [],
   getPendingPayments: async () => isMock ? getStorage<PaymentLog[]>('paymentLogs', []).filter(p => p.status === 'PENDING') : [],
@@ -196,7 +207,8 @@ export const api = {
 
   submitPayment: async (uid: string, amt: number, meth: any, trx: string): Promise<boolean> => {
       const log: PaymentLog = {
-          id: crypto.randomUUID(),
+          // Cast to any to avoid template literal UUID type errors during object creation
+          id: crypto.randomUUID() as any,
           userId: uid,
           amount: amt,
           method: meth,
@@ -216,7 +228,8 @@ export const api = {
 
   requestWithdrawal: async (u: User, c: number, m: any, a: string): Promise<boolean> => {
       const log: WithdrawalLog = {
-          id: crypto.randomUUID(),
+          // Cast to any to avoid template literal UUID type errors during object creation
+          id: crypto.randomUUID() as any,
           userId: u.id,
           coins: c,
           amount: c / 10,
@@ -237,7 +250,8 @@ export const api = {
 
   createCampaign: async (u: User, desc: string, type: any, dur: number, url: string, vid: string, q: number): Promise<boolean> => {
       const task: ChannelTask = {
-          id: crypto.randomUUID(),
+          // Cast to any to avoid template literal UUID type errors during object creation
+          id: crypto.randomUUID() as any,
           ownerId: u.id,
           channelUrl: url,
           videoId: vid,
