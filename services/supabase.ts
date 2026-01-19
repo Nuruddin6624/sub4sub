@@ -21,7 +21,7 @@ const setStorage = (key: string, val: any) => {
   localStorage.setItem(key, JSON.stringify(val));
 };
 
-// --- MAPPING HELPERS (DB snake_case to Frontend camelCase) ---
+// --- MAPPING HELPERS ---
 const mapUser = (db: any): User | null => {
     if (!db) return null;
     return {
@@ -34,7 +34,8 @@ const mapUser = (db: any): User | null => {
 
 const mapPayment = (db: any): PaymentLog => ({
     id: db.id, userId: db.user_id || db.userId,
-    amount: db.amount, method: db.method,
+    amount: db.amount, coinsRequested: db.coins_requested || db.coinsRequested || 0,
+    method: db.method,
     transactionId: db.transaction_id || db.transactionId,
     status: db.status, timestamp: db.timestamp || db.created_at
 });
@@ -118,20 +119,13 @@ export const api = {
     let finalUserId = '';
     
     if (!isMock) {
-        // First try to see if user is already authenticated (from Google)
         const { data: { user: authUser } } = await supabase!.auth.getUser();
-        
         if (!authUser) {
-            // New email signup
             const { data: signUpData, error: signUpError } = await supabase!.auth.signUp({ 
-                email, 
-                password,
-                options: {
-                    data: { channel_name: channelName }
-                }
+                email, password, options: { data: { channel_name: channelName } }
             });
             if (signUpError) throw signUpError;
-            if (!signUpData.user) throw new Error("Signup failed. Please check your email.");
+            if (!signUpData.user) throw new Error("Signup failed. Check email.");
             finalUserId = signUpData.user.id;
         } else {
             finalUserId = authUser.id;
@@ -140,14 +134,7 @@ export const api = {
         finalUserId = crypto.randomUUID();
     }
 
-    const newUser: User = { 
-        id: finalUserId, 
-        email, 
-        channelUrl, 
-        channelName, 
-        coins: 10, 
-        joinedAt: new Date().toISOString() 
-    };
+    const newUser: User = { id: finalUserId, email, channelUrl, channelName, coins: 10, joinedAt: new Date().toISOString() };
 
     if (isMock) {
       setStorage('currentUser', newUser);
@@ -155,21 +142,13 @@ export const api = {
       dbUsers.push(newUser);
       setStorage('db_users', dbUsers);
     } else {
-      // THE UPSERT MUST MATCH THE POLICIES
       const { error: dbError } = await supabase!.from('users').upsert({
-          id: newUser.id,
-          email: newUser.email,
-          channel_url: newUser.channelUrl, 
-          channel_name: newUser.channelName,
-          coins: newUser.coins,
-          joined_at: newUser.joinedAt
+          id: newUser.id, email: newUser.email, channel_url: newUser.channelUrl, 
+          channel_name: newUser.channelName, coins: newUser.coins, joined_at: newUser.joinedAt
       }, { onConflict: 'id' });
 
       if (dbError) {
-          console.error("Supabase Error:", dbError);
-          if (dbError.message.includes('row-level security')) {
-              throw new Error("Database Security Error: Please ensure you have run the RLS SQL commands in your Supabase SQL Editor.");
-          }
+          if (dbError.message.includes('row-level security')) throw new Error("Database Security Error: Please run the SQL commands in your Supabase SQL Editor.");
           throw dbError;
       }
       setStorage('currentUser', newUser);
@@ -240,13 +219,12 @@ export const api = {
   },
   
   reviewAction: async (id: string, status: any, reward: number): Promise<boolean> => {
-      let userId = '';
       if (isMock) {
           const logs = getStorage<any[]>('actionLogs', []);
           const index = logs.findIndex(l => l.id === id);
           if (index !== -1) {
               logs[index].status = status;
-              userId = logs[index].user_id || logs[index].userId;
+              const userId = logs[index].user_id || logs[index].userId;
               setStorage('actionLogs', logs);
               if (status === 'VERIFIED') {
                   const dbUsers = getStorage<User[]>('db_users', []);
@@ -257,10 +235,8 @@ export const api = {
           }
           return false;
       }
-      
       const { data: log } = await supabase!.from('action_logs').select('user_id').eq('id', id).single();
       if (!log) return false;
-      
       const { error } = await supabase!.from('action_logs').update({ status }).eq('id', id);
       if (!error && status === 'VERIFIED') {
           const { data: user } = await supabase!.from('users').select('coins').eq('id', log.user_id).single();
@@ -269,8 +245,8 @@ export const api = {
       return !error;
   },
 
-  submitPayment: async (uid: string, amt: number, meth: any, trx: string): Promise<boolean> => {
-      const logData = { user_id: uid, amount: amt, method: meth, transaction_id: trx, status: 'PENDING', timestamp: new Date().toISOString() };
+  submitPayment: async (uid: string, price: number, coins: number, meth: any, trx: string): Promise<boolean> => {
+      const logData = { user_id: uid, amount: price, coins_requested: coins, method: meth, transaction_id: trx, status: 'PENDING', timestamp: new Date().toISOString() };
       if (isMock) {
           const logs = getStorage<any[]>('paymentLogs', []);
           logs.push({ ...logData, id: crypto.randomUUID() });
