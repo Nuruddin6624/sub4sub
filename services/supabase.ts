@@ -5,8 +5,8 @@ import { MOCK_CHANNELS, ACTION_BASE_COSTS, COST_PER_MINUTE } from '../constants'
 // ==========================================
 // 🔴 SUPABASE CONFIG
 // ==========================================
-const SUPABASE_URL = ((import.meta as any).env && (import.meta as any).env.VITE_SUPABASE_URL) || 'https://kqypggcnbeoepcbwlzmi.supabase.co';
-const SUPABASE_KEY = ((import.meta as any).env && (import.meta as any).env.VITE_SUPABASE_ANON_KEY) || 'sb_publishable_XHlqJgMK_8xFvj5sikXfWQ_Lec1Wq9A';
+const SUPABASE_URL = ((import.meta as any).env && (import.meta as any).env.VITE_SUPABASE_URL) || 'আপনার_SUPABASE_URL';
+const SUPABASE_KEY = ((import.meta as any).env && (import.meta as any).env.VITE_SUPABASE_ANON_KEY) || 'আপনার_SUPABASE_KEY';
 // ==========================================
 
 const isMock = !SUPABASE_URL || !SUPABASE_KEY || SUPABASE_URL.includes('আপনার_SUPABASE');
@@ -119,22 +119,52 @@ export const api = {
     let finalUserId = '';
     
     if (!isMock) {
-        const { data: { user: authUser } } = await supabase!.auth.getUser();
+        // Step 1: Get Current Session (Important for Google Login users returning)
+        let { data: { user: authUser } } = await supabase!.auth.getUser();
+        
         if (!authUser) {
+            // Step 2: If no session, Create Auth Account (Standard Email Signup)
             const { data: signUpData, error: signUpError } = await supabase!.auth.signUp({ 
-                email, password, options: { data: { channel_name: channelName } }
+                email, 
+                password, 
+                options: { data: { channel_name: channelName } } 
             });
             if (signUpError) throw signUpError;
-            if (!signUpData.user) throw new Error("Signup failed. Check email.");
-            finalUserId = signUpData.user.id;
-        } else {
-            finalUserId = authUser.id;
+            if (!signUpData.user) throw new Error("Check your email for confirmation link.");
+            authUser = signUpData.user;
+        }
+
+        finalUserId = authUser.id;
+        
+        // Step 3: Upsert Profile with a small delay to allow Auth triggers to finish if any
+        // If your DB has a trigger (recommended), this will just update the extra fields.
+        const { error: dbError } = await supabase!.from('users').upsert({
+            id: finalUserId, 
+            email: email, 
+            channel_url: channelUrl, 
+            channel_name: channelName, 
+            // Only set default coins if creating new, don't overwrite balance if updating
+        }, { onConflict: 'id' });
+
+        if (dbError) {
+            console.error("Profile Setup Error:", dbError);
+            if (dbError.message.includes('foreign key constraint')) {
+                throw new Error("Authentication link is still processing. Please try again in 5 seconds.");
+            }
+            throw dbError;
         }
     } else {
         finalUserId = crypto.randomUUID();
     }
 
-    const newUser: User = { id: finalUserId, email, channelUrl, channelName, coins: 10, joinedAt: new Date().toISOString() };
+    const newUser: User = { 
+        id: finalUserId, 
+        email, 
+        channelUrl, 
+        channelName, 
+        coins: 10, 
+        joinedAt: new Date().toISOString() 
+    };
 
     if (isMock) {
       setStorage('currentUser', newUser);
@@ -142,16 +172,13 @@ export const api = {
       dbUsers.push(newUser);
       setStorage('db_users', dbUsers);
     } else {
-      const { error: dbError } = await supabase!.from('users').upsert({
-          id: newUser.id, email: newUser.email, channel_url: newUser.channelUrl, 
-          channel_name: newUser.channelName, coins: newUser.coins, joined_at: newUser.joinedAt
-      }, { onConflict: 'id' });
-
-      if (dbError) {
-          if (dbError.message.includes('row-level security')) throw new Error("Database Security Error: Please run the SQL commands in your Supabase SQL Editor.");
-          throw dbError;
-      }
-      setStorage('currentUser', newUser);
+        // Refresh local user data from DB to get actual coin balance
+        const freshUser = await api.getUser(finalUserId);
+        if (freshUser) {
+            setStorage('currentUser', freshUser);
+            return freshUser;
+        }
+        setStorage('currentUser', newUser);
     }
     return newUser;
   },
