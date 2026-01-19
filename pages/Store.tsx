@@ -24,7 +24,8 @@ const Store: React.FC<StoreProps> = ({ user, refreshUser }) => {
     // Simulate API delay
     await new Promise(r => setTimeout(r, 1500));
     
-    const result = await api.submitPayment(user.id, selectedPlan.coins, paymentMethod, trxId);
+    // Pass price as amount, and plan coins as coinsRequested
+    const result = await api.submitPayment(user.id, selectedPlan.price, selectedPlan.coins, paymentMethod, trxId);
     
     if (result) {
         setSuccess(true);
