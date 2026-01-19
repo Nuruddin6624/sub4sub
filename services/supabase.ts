@@ -1,19 +1,17 @@
-
 import { createClient } from '@supabase/supabase-js';
 import { User, ChannelTask, ActionLog, PaymentLog, WithdrawalLog } from '../types';
 import { MOCK_CHANNELS, ACTION_BASE_COSTS, COST_PER_MINUTE } from '../constants';
 
 // ==========================================
-// 🔴 SUPABASE URL & KEY (এগুলো আপনার Supabase Dashboard থেকে পাবেন)
+// 🔴 SUPABASE CONFIG
 // ==========================================
 const SUPABASE_URL = ((import.meta as any).env && (import.meta as any).env.VITE_SUPABASE_URL) || 'https://kqypggcnbeoepcbwlzmi.supabase.co';
 const SUPABASE_KEY = ((import.meta as any).env && (import.meta as any).env.VITE_SUPABASE_ANON_KEY) || 'sb_publishable_XHlqJgMK_8xFvj5sikXfWQ_Lec1Wq9A';
 // ==========================================
 
-const isMock = !SUPABASE_URL || !SUPABASE_KEY || SUPABASE_URL.includes('আপনার_SUPABASE_URL');
+const isMock = !SUPABASE_URL || !SUPABASE_KEY || SUPABASE_URL.includes('আপনার_SUPABASE');
 export const supabase = !isMock ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
-// --- MOCK STORAGE HELPERS (Fallback) ---
 const getStorage = <T>(key: string, defaultVal: T): T => {
   const stored = localStorage.getItem(key);
   return stored ? JSON.parse(stored) : defaultVal;
@@ -22,17 +20,13 @@ const setStorage = (key: string, val: any) => {
   localStorage.setItem(key, JSON.stringify(val));
 };
 
-// --- API METHODS ---
 export const api = {
-  // Get Current Session (Important for OAuth detection)
   getSession: async () => {
     if (isMock) return null;
-    const { data, error } = await supabase!.auth.getSession();
-    if (error) return null;
+    const { data } = await supabase!.auth.getSession();
     return data.session;
   },
 
-  // Get User Profile from DB
   getUser: async (userId?: string): Promise<User | null> => {
     if (isMock) return getStorage<User | null>('currentUser', null);
     
@@ -43,13 +37,11 @@ export const api = {
       targetId = user.id;
     }
     
-    // Check if profile exists in public.users table
     const { data, error } = await supabase!.from('users').select('*').eq('id', targetId).single();
     if (error || !data) return null;
     return data;
   },
 
-  // Find User by Email
   findUserByEmail: async (email: string): Promise<User | null> => {
       if (isMock) {
           const dbUsers = getStorage<User[]>('db_users', []);
@@ -59,22 +51,25 @@ export const api = {
       return data;
   },
 
-  // Google Login Trigger
   signInWithGoogle: async () => {
-    if (isMock) {
-        alert("Mock Mode: Configure Supabase keys in services/supabase.ts");
-        return;
-    }
+    if (isMock) throw new Error("Supabase is not configured.");
     const { error } = await supabase!.auth.signInWithOAuth({
       provider: 'google',
-      options: {
-        redirectTo: window.location.origin // Ensure this matches your Supabase Auth settings
-      }
+      options: { redirectTo: window.location.origin }
     });
     if (error) throw error;
   },
 
-  // Admin Login Flow
+  signInWithEmail: async (email: string, pass: string) => {
+      if (isMock) {
+          const u = await api.findUserByEmail(email);
+          if (u) return { user: { id: u.id, email: u.email }, error: null };
+          return { user: null, error: 'User not found in Mock mode' };
+      }
+      const { data, error } = await supabase!.auth.signInWithPassword({ email, password: pass });
+      return { user: data.user, error: error?.message };
+  },
+
   signInAdmin: async (email: string, password: string): Promise<User | null> => {
     if (email === 'shamim6624@gmail.com' && password === 'nur6624') {
         const adminUser: User = {
@@ -91,17 +86,29 @@ export const api = {
     return null;
   },
 
-  registerUser: async (email: string, channelUrl: string, channelName: string): Promise<User> => {
-    // Cast to any to handle potential UUID template literal type mismatches in different environments
-    let id = crypto.randomUUID() as any;
-    
+  registerUser: async (email: string, password: string, channelUrl: string, channelName: string): Promise<User> => {
+    let finalUserId = crypto.randomUUID() as any;
+
     if (!isMock) {
-        const { data: { user } } = await supabase!.auth.getUser();
-        if (user) id = user.id;
+        // 1. Check if user already has an Auth session (from Google)
+        const { data: { user: existingAuthUser } } = await supabase!.auth.getUser();
+        
+        if (!existingAuthUser) {
+            // 2. New Email Signup: Create Auth User
+            const { data: signUpData, error: signUpError } = await supabase!.auth.signUp({
+                email,
+                password,
+            });
+            if (signUpError) throw signUpError;
+            if (!signUpData.user) throw new Error("Signup failed. No user returned.");
+            finalUserId = signUpData.user.id;
+        } else {
+            finalUserId = existingAuthUser.id;
+        }
     }
 
     const newUser: User = {
-      id,
+      id: finalUserId,
       email,
       channelUrl,
       channelName,
@@ -115,14 +122,14 @@ export const api = {
       dbUsers.push(newUser);
       setStorage('db_users', dbUsers);
     } else {
-      const { error } = await supabase!.from('users').upsert(newUser);
-      if (error) throw error;
+      const { error: dbError } = await supabase!.from('users').upsert(newUser);
+      if (dbError) throw dbError;
       setStorage('currentUser', newUser);
     }
     return newUser;
   },
 
-  // --- ADMIN TOOLS ---
+  // --- REMAINING API METHODS (Tasks, Withdrawals, etc.) ---
   getAllUsers: async (): Promise<User[]> => {
       if (isMock) return getStorage<User[]>('db_users', []);
       const { data } = await supabase!.from('users').select('*');
@@ -144,7 +151,6 @@ export const api = {
       return !error;
   },
 
-  // --- TASK MANAGEMENT ---
   getTasks: async (excludeUserId: string): Promise<ChannelTask[]> => {
     if (isMock) {
       const userCampaigns = getStorage<ChannelTask[]>('active_campaigns', []);
@@ -158,7 +164,6 @@ export const api = {
 
   submitProof: async (user: User, task: ChannelTask, screenshotData: string): Promise<boolean> => {
       const log: ActionLog = {
-          // Cast to any to satisfy specific UUID template literal types often used by Supabase database schema definitions
           id: crypto.randomUUID() as any,
           userId: user.id,
           userName: user.channelName,
@@ -207,7 +212,6 @@ export const api = {
 
   submitPayment: async (uid: string, amt: number, meth: any, trx: string): Promise<boolean> => {
       const log: PaymentLog = {
-          // Cast to any to avoid template literal UUID type errors during object creation
           id: crypto.randomUUID() as any,
           userId: uid,
           amount: amt,
@@ -228,7 +232,6 @@ export const api = {
 
   requestWithdrawal: async (u: User, c: number, m: any, a: string): Promise<boolean> => {
       const log: WithdrawalLog = {
-          // Cast to any to avoid template literal UUID type errors during object creation
           id: crypto.randomUUID() as any,
           userId: u.id,
           coins: c,
@@ -250,7 +253,6 @@ export const api = {
 
   createCampaign: async (u: User, desc: string, type: any, dur: number, url: string, vid: string, q: number): Promise<boolean> => {
       const task: ChannelTask = {
-          // Cast to any to avoid template literal UUID type errors during object creation
           id: crypto.randomUUID() as any,
           ownerId: u.id,
           channelUrl: url,
