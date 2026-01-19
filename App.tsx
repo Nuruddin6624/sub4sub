@@ -28,25 +28,15 @@ const App: React.FC = () => {
   const [userName, setUserName] = useState('');
 
   useEffect(() => {
-    // Handle Supabase Hash Conflict (OAuth redirect fixes)
-    const handleHashAuth = () => {
-        const hash = window.location.hash;
-        if (hash.includes('access_token=') || hash.includes('type=recovery')) {
-            // If it's not starting with #/ (router format), it's a Supabase raw hash
-            if (!hash.startsWith('#/')) {
-                // Supabase will handle this automatically, we just need to wait for onAuthStateChange
-                console.log("Detected Supabase Auth Hash");
-            }
-        }
-    };
-    handleHashAuth();
-
+    // 1. Initial Load
     initAuth();
 
+    // 2. Auth State Observer
     if (supabase) {
         const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+            console.log("Auth Event:", event);
             if (session?.user) {
-                // Clean URL hash if it contains auth tokens
+                // If tokens in URL, clean them for HashRouter safety
                 if (window.location.hash.includes('access_token')) {
                     window.history.replaceState(null, '', window.location.pathname);
                 }
@@ -55,9 +45,13 @@ const App: React.FC = () => {
                 setUser(null);
                 setNeedsSetup(false);
                 setLoading(false);
+            } else if (event === 'INITIAL_SESSION' && !session) {
+                setLoading(false);
             }
         });
         return () => subscription.unsubscribe();
+    } else {
+        setLoading(false);
     }
   }, []);
 
@@ -69,10 +63,11 @@ const App: React.FC = () => {
         } else {
             const localUser = await api.getUser();
             if (localUser) setUser(localUser);
-            setLoading(false);
         }
     } catch (err) {
-        setLoading(false);
+        console.error("Init Auth Error:", err);
+    } finally {
+        // Only stop loading if we don't find a user (checkUserProfile handles its own loading)
     }
   };
 
@@ -87,6 +82,7 @@ const App: React.FC = () => {
               setNeedsSetup(true);
           }
       } catch (err) {
+          console.error("Profile check failed:", err);
           setEmail(userEmail);
           setNeedsSetup(true);
       } finally {
@@ -100,7 +96,7 @@ const App: React.FC = () => {
           setAuthProcessing(true);
           await api.signInWithGoogle();
       } catch (err: any) {
-          setError(err.message);
+          setError(err.message || "Google Login failed");
           setAuthProcessing(false);
       }
   };
@@ -110,7 +106,7 @@ const App: React.FC = () => {
       setError('');
       setAuthProcessing(true);
       
-      // 1. Admin Access
+      // Admin Check
       if (email === 'shamim6624@gmail.com' && password === 'nur6624') {
           const admin = await api.signInAdmin(email, password);
           if (admin) {
@@ -120,22 +116,14 @@ const App: React.FC = () => {
           }
       }
 
-      // 2. Regular User Flow
       try {
           if (authMode === 'LOGIN') {
               const { user: authUser, error: authError } = await api.signInWithEmail(email, password);
               if (authError) throw new Error(authError);
               if (authUser) await checkUserProfile(authUser.id, authUser.email!);
           } else {
-              // SIGN UP mode: Check if profile exists first
-              const exists = await api.findUserByEmail(email);
-              if (exists) {
-                  setError('Account already exists. Please login.');
-                  setAuthMode('LOGIN');
-              } else {
-                  // User exists in setup mode
-                  setNeedsSetup(true);
-              }
+              // Sign Up - Trigger Setup Mode
+              setNeedsSetup(true);
           }
       } catch (err: any) {
           setError(err.message || 'Authentication failed');
@@ -150,13 +138,13 @@ const App: React.FC = () => {
       setError('');
       try {
           if (!userUrl || !userName) throw new Error("Please fill all fields");
+          if (authMode === 'SIGNUP' && password.length < 6) throw new Error("Password must be 6+ chars");
           
-          // registerUser now handles both Supabase Sign-Up and Profile Creation
           const newUser = await api.registerUser(email, password, userUrl, userName);
           setUser(newUser);
           setNeedsSetup(false);
       } catch (err: any) {
-          setError(err.message);
+          setError(err.message || "Registration failed. Try a different email?");
       } finally {
           setAuthProcessing(false);
       }
@@ -178,7 +166,7 @@ const App: React.FC = () => {
     return (
         <div className="h-screen w-screen flex flex-col items-center justify-center bg-white">
             <Loader2 className="w-10 h-10 text-brand-600 animate-spin mb-4" />
-            <p className="text-gray-400 font-medium animate-pulse">Syncing Session...</p>
+            <p className="text-gray-400 font-medium animate-pulse text-sm">Initializing Secure Session...</p>
         </div>
     );
   }
@@ -251,7 +239,7 @@ const App: React.FC = () => {
                          className="w-full bg-brand-600 text-white font-bold py-4 rounded-2xl shadow-xl hover:bg-brand-700 transition-all active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50"
                        >
                            {authProcessing ? <Loader2 className="animate-spin" size={20} /> : (authMode === 'LOGIN' ? <LogIn size={20} /> : <UserPlus size={20} />)}
-                           <span>{authMode === 'LOGIN' ? 'Login' : 'Create Account'}</span>
+                           <span>{authMode === 'LOGIN' ? 'Login' : 'Next: Channel Info'}</span>
                        </button>
                    </form>
 
@@ -276,8 +264,8 @@ const App: React.FC = () => {
         <div className="min-h-screen bg-brand-600 flex items-center justify-center p-4">
             <div className="w-full max-w-md bg-white rounded-[2.5rem] shadow-2xl p-10">
                 <div className="text-center mb-8">
-                    <h2 className="text-3xl font-black text-gray-900 leading-tight">Channel Setup</h2>
-                    <p className="text-gray-400 mt-2 font-medium">Link your YouTube to complete registration.</p>
+                    <h2 className="text-3xl font-black text-gray-900 leading-tight">Final Step</h2>
+                    <p className="text-gray-400 mt-2 font-medium">Connect your YouTube details to start earning.</p>
                 </div>
 
                 {error && <div className="mb-4 p-3 bg-red-50 text-red-600 text-xs rounded-xl border border-red-100">{error}</div>}
@@ -304,7 +292,7 @@ const App: React.FC = () => {
                     <button type="submit" disabled={authProcessing} className="w-full bg-brand-600 text-white font-bold py-5 rounded-2xl shadow-xl hover:bg-brand-700 transition-all disabled:opacity-50 flex justify-center items-center">
                         {authProcessing ? <Loader2 className="animate-spin" /> : 'Complete Registration'}
                     </button>
-                    <button type="button" onClick={handleLogout} className="w-full text-gray-400 text-sm font-bold mt-2">Cancel</button>
+                    <button type="button" onClick={handleLogout} className="w-full text-gray-400 text-sm font-bold mt-2">Go Back</button>
                 </form>
             </div>
         </div>
