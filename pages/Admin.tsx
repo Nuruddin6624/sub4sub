@@ -27,7 +27,6 @@ const Admin: React.FC<AdminProps> = ({ onLogout }) => {
         loadData();
         
         // --- REALTIME POLLING ---
-        // Automatically refresh data every 30 seconds
         const interval = setInterval(() => {
             silentRefresh();
         }, 30000);
@@ -114,7 +113,7 @@ const Admin: React.FC<AdminProps> = ({ onLogout }) => {
                     {[
                         { id: 'proofs', icon: Eye, label: 'Proofs', count: pendingProofs.length, color: 'bg-red-500' },
                         { id: 'deposits', icon: CreditCard, label: 'Deposits', count: deposits.length, color: 'bg-green-500' },
-                        { id: 'withdrawals', icon: Wallet, label: 'Withdrawals', count: 0, color: 'bg-blue-500' },
+                        { id: 'withdrawals', icon: Wallet, label: 'Withdrawals', count: withdrawals.filter(w=>w.status==='PENDING').length, color: 'bg-blue-500' },
                         { id: 'users', icon: Users, label: 'Users', count: 0, color: 'bg-gray-500' }
                     ].map(tab => (
                         <button 
@@ -187,7 +186,7 @@ const Admin: React.FC<AdminProps> = ({ onLogout }) => {
                                     deposits.map((d) => (
                                         <div key={d.id} className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                                             <div className="flex-1">
-                                                <div className="text-2xl font-black text-gray-900">৳{d.amount} <span className="text-xs text-gray-400 font-normal">→ {d.amount} Coins</span></div>
+                                                <div className="text-2xl font-black text-gray-900">৳{d.amount} <span className="text-xs text-gray-400 font-normal">→ {d.coinsRequested} Coins</span></div>
                                                 <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
                                                     <span className={`px-2 py-0.5 rounded font-bold ${d.method === 'bKash' ? 'bg-pink-100 text-pink-700' : 'bg-orange-100 text-orange-700'}`}>{d.method}</span>
                                                     <span className="font-mono bg-gray-100 px-2 py-0.5 border rounded">Trx: {d.transactionId}</span>
@@ -196,7 +195,7 @@ const Admin: React.FC<AdminProps> = ({ onLogout }) => {
                                                 <p className="text-[10px] text-gray-400 mt-2">User: {d.userId}</p>
                                             </div>
                                             <div className="flex gap-2 w-full sm:w-auto">
-                                                <button onClick={() => handleDepositAction(d.id, 'APPROVED', d.amount)} className="flex-1 px-4 py-2 bg-green-500 text-white rounded-lg font-bold text-xs flex items-center gap-1"><Check size={14} /> Approve</button>
+                                                <button onClick={() => handleDepositAction(d.id, 'APPROVED', d.coinsRequested)} className="flex-1 px-4 py-2 bg-green-500 text-white rounded-lg font-bold text-xs flex items-center gap-1"><Check size={14} /> Approve</button>
                                                 <button onClick={() => handleDepositAction(d.id, 'REJECTED', 0)} className="flex-1 px-4 py-2 bg-red-50 text-red-600 border border-red-100 rounded-lg font-bold text-xs flex items-center gap-1"><X size={14} /> Reject</button>
                                             </div>
                                         </div>
